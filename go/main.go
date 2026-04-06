@@ -11,64 +11,101 @@ var programStart = time.Now()
 // CONSTANTS
 const numCustomers = 20
 const waitCapacity = 5
-const custArrivMin = 500 // ms
-const custArrivMax = 2000 // ms
-const cutDurMin = 1000 // ms
-const cutDurMax = 4000 // ms
-const satThresh = 3000 // ms per star lost
-const gracePeriod = 5*cutDurMax // ms
+const custArrivMin = 500          // ms
+const custArrivMax = 2000         // ms
+const cutDurMin = 1000            // ms
+const cutDurMax = 4000            // ms
+const satThresh = 3000            // ms per star lost
+const gracePeriod = 5 * cutDurMax // ms
 
-// Universal message type
+// Message kinds and payloads. Only the payload fields that correspond to Kind are meaningful;
+// helpers below construct well-formed messages for each case.
 type MsgKind int
+
 const (
-    MsgArrive MsgKind = iota
-    MsgAdmitted
-    MsgTurnedAway
-    MsgNextCustomer
-    MsgCustomerReady
-    MsgNoneWaiting
-    MsgWakeUp
+	MsgArrive MsgKind = iota
+	MsgAdmitted
+	MsgTurnedAway
+	MsgNextCustomer
+	MsgCustomerReady
+	MsgNoneWaiting
+	MsgWakeUp
 	MsgStartHaircut
-    MsgRateRequest
-    MsgRating
-    MsgGetStats
-    MsgWRStatsReply
+	MsgRateRequest
+	MsgRating
+	MsgGetStats
+	MsgWRStatsReply
 	MsgBarberStatsReply
-    MsgShutdown
+	MsgShutdown
 	MsgShutdownAck
 )
+
+// RatingReply is the payload for MsgRating (customer → barber).
+type RatingReply struct {
+	Stars  int
+	WaitMs int64
+}
+
+// WaitingRoomStats is the payload for MsgWRStatsReply.
+type WaitingRoomStats struct {
+	QueueLen      int
+	TurnawayCount int
+}
+
+// BarberStats is the payload for MsgBarberStatsReply.
+type BarberStats struct {
+	CutsCompleted int
+	AvgWaitMs     float64
+	AvgRating     float64
+}
+
 type Message struct {
 	Kind MsgKind
-	From chan Message // reply-to channel
-	CustomerID int
-	Value int	// payload
-	ArrivalMs int64 // arrival timestamp
-	Rating int // rating from customer
-	WaitTime int64 // customer wait time (ms)
-	// Waiting Room stats
-	QueueLengthStat int 
-	TurnawayCountStat int
-	// Barber stats 
-	CutCountStat int
-	AvgWaitTime float64
-	AvgRatingStat float64
+	From chan Message // reply-to channel when the message expects a reply
 
+	// MsgArrive, MsgCustomerReady: customer id; MsgArrive also uses ArrivalMs.
+	CustomerID int
+	ArrivalMs  int64
+
+	Rating      RatingReply      // MsgRating
+	WRStats     WaitingRoomStats // MsgWRStatsReply
+	BarberStats BarberStats      // MsgBarberStatsReply
+}
+
+func msgArrive(reply chan Message, customerID int, arrivalMs int64) Message {
+	return Message{Kind: MsgArrive, From: reply, CustomerID: customerID, ArrivalMs: arrivalMs}
+}
+
+func msgCustomerReady(customerMailbox chan Message, customerID int) Message {
+	return Message{Kind: MsgCustomerReady, From: customerMailbox, CustomerID: customerID}
+}
+
+func msgRating(stars int, waitMs int64) Message {
+	return Message{Kind: MsgRating, Rating: RatingReply{Stars: stars, WaitMs: waitMs}}
+}
+
+func msgWRStatsReply(q WaitingRoomStats) Message {
+	return Message{Kind: MsgWRStatsReply, WRStats: q}
+}
+
+func msgBarberStatsReply(s BarberStats) Message {
+	return Message{Kind: MsgBarberStatsReply, BarberStats: s}
 }
 
 type WaitingCustomer struct {
-	ID int
+	ID      int
 	Mailbox chan Message
 }
 
 // Util
 func clamp(lo, hi, v int) int {
-    if v < lo {
-        return lo
-    }
-    if v > hi {
-        return hi
-    }
-    return v
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func elapsedMs() int64 {
@@ -94,26 +131,26 @@ func shopOwner() {
 	for i := 0; i < numCustomers; i++ {
 		go customer(i, waitRoomChannel)
 		logf("shop owner", "spawned customer %d", i)
-		time.Sleep(time.Duration(rand.Intn(custArrivMax-custArrivMin)+custArrivMin)*time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(custArrivMax-custArrivMin)+custArrivMin) * time.Millisecond)
 	}
 	time.Sleep(gracePeriod)
 	barberChannel <- Message{
 		Kind: MsgGetStats,
 		From: mailbox,
 	}
-	barberStatsReply := <- mailbox
+	barberStatsReply := <-mailbox
 	waitRoomChannel <- Message{
 		Kind: MsgGetStats,
 		From: mailbox,
 	}
-	waitRoomStatsReply := <- mailbox
-	
+	waitRoomStatsReply := <-mailbox
+
 	logf("shop owner", "initiating shutdown...")
 	barberChannel <- Message{
 		Kind: MsgShutdown,
 		From: mailbox,
 	}
-	barberShutdownReply := <- mailbox
+	barberShutdownReply := <-mailbox
 	if barberShutdownReply.Kind == MsgShutdownAck {
 		logf("shop owner", "barber confirmed shutdown")
 	}
@@ -122,14 +159,14 @@ func shopOwner() {
 		Kind: MsgShutdown,
 		From: mailbox,
 	}
-	waitRoomShutdownReply := <- mailbox
+	waitRoomShutdownReply := <-mailbox
 	if waitRoomShutdownReply.Kind == MsgShutdownAck {
 		logf("shop owner", "waiting room confirmed shutdown")
 	}
-	cust_served := barberStatsReply.CutCountStat
-	cust_rejected := waitRoomStatsReply.TurnawayCountStat
-	avg_wait := barberStatsReply.AvgWaitTime
-	avg_rating := barberStatsReply.AvgRatingStat
+	cust_served := barberStatsReply.BarberStats.CutsCompleted
+	cust_rejected := waitRoomStatsReply.WRStats.TurnawayCount
+	avg_wait := barberStatsReply.BarberStats.AvgWaitMs
+	avg_rating := barberStatsReply.BarberStats.AvgRating
 
 	fmt.Println("============= CLOSING REPORT ============")
 	fmt.Printf("Total customers arrived: %d\n", numCustomers)
@@ -140,14 +177,13 @@ func shopOwner() {
 	fmt.Println("==========================================")
 }
 
-
 func waitingRoom(mailbox chan Message) {
 	turnaway_count := 0
 	cust_queue := make([]WaitingCustomer, 0, waitCapacity)
 	barberIsSleeping := false
 	var barberChannel chan Message
 	for {
-		msg := <- mailbox
+		msg := <-mailbox
 		switch msg.Kind {
 		case MsgNextCustomer:
 			barberChannel = msg.From
@@ -159,11 +195,7 @@ func waitingRoom(mailbox chan Message) {
 			} else {
 				next_customer := cust_queue[0]
 				cust_queue = cust_queue[1:]
-				barberChannel <- Message{
-					Kind: MsgCustomerReady,
-					CustomerID: next_customer.ID,
-					From: next_customer.Mailbox,
-				}
+				barberChannel <- msgCustomerReady(next_customer.Mailbox, next_customer.ID)
 			}
 		case MsgArrive:
 			if len(cust_queue) >= waitCapacity {
@@ -185,14 +217,13 @@ func waitingRoom(mailbox chan Message) {
 				}
 				logf("WR", "customer %d admitted. %d in queue", msg.CustomerID, len(cust_queue))
 			}
-		
+
 		case MsgGetStats:
-			msg.From <- Message{
-				Kind: MsgWRStatsReply,
-				QueueLengthStat: len(cust_queue),
-				TurnawayCountStat: turnaway_count,
-			}
-		
+			msg.From <- msgWRStatsReply(WaitingRoomStats{
+				QueueLen:      len(cust_queue),
+				TurnawayCount: turnaway_count,
+			})
+
 		case MsgShutdown:
 			if msg.From != nil {
 				msg.From <- Message{Kind: MsgShutdownAck}
@@ -209,20 +240,15 @@ func customer(id int, waitRoomChannel chan Message) {
 	arriveTime := elapsedMs()
 	logf(actor, "arrived at waiting room")
 	mailbox := make(chan Message)
-	waitRoomChannel <- Message{
-		Kind: MsgArrive,
-		From: mailbox,
-		CustomerID: id, 
-		ArrivalMs: arriveTime,
-	}
+	waitRoomChannel <- msgArrive(mailbox, id, arriveTime)
 
 	for {
-		msg := <- mailbox
+		msg := <-mailbox
 		switch msg.Kind {
 		case MsgTurnedAway:
 			return
 		case MsgAdmitted:
-			cutStartMsg := <- mailbox // wait for haircut to start
+			cutStartMsg := <-mailbox // wait for haircut to start
 			if cutStartMsg.Kind != MsgStartHaircut {
 				logf(actor, "error: received unexpected message instead of MsgStartHaircut")
 				return
@@ -231,24 +257,19 @@ func customer(id int, waitRoomChannel chan Message) {
 			wait := cutStartTime - arriveTime
 			jitter := rand.Intn(3) - 1 // {-1, 0, +1}
 			score := clamp(1, 5, int(5-(wait/satThresh))+jitter)
-			
-			rateReqMsg := <- mailbox
+
+			rateReqMsg := <-mailbox
 			if rateReqMsg.Kind != MsgRateRequest {
 				logf(actor, "error: received unexpected message instead of MsgRateRequest")
 				return
 			}
 			logf(actor, "rates %d stars, waited %d ms", score, wait)
-			rateReqMsg.From <- Message{
-				Kind: MsgRating,
-				Rating: score,
-				WaitTime: wait,
-			}
+			rateReqMsg.From <- msgRating(score, wait)
 			return
-			}
-		}	
-
+		}
 	}
 
+}
 
 func barber(mailbox chan Message, waitRoomChannel chan Message) {
 	// main "awake" loop for Barber
@@ -263,13 +284,13 @@ func barber(mailbox chan Message, waitRoomChannel chan Message) {
 	}
 	requestNextCustomer()
 	for {
-		msg := <- mailbox
+		msg := <-mailbox
 		switch msg.Kind {
 		case MsgCustomerReady:
 			msg.From <- Message{
 				Kind: MsgStartHaircut,
 			}
-			cutLength := time.Duration(rand.Intn((cutDurMax-cutDurMin)) + cutDurMin) * time.Millisecond
+			cutLength := time.Duration(rand.Intn((cutDurMax-cutDurMin))+cutDurMin) * time.Millisecond
 			logf("barber", "starting haircut for customer %d", msg.CustomerID)
 			time.Sleep(cutLength)
 			logf("barber", "finished haircut for customer %d", msg.CustomerID)
@@ -278,10 +299,10 @@ func barber(mailbox chan Message, waitRoomChannel chan Message) {
 				Kind: MsgRateRequest,
 				From: ratingReplyChannel,
 			}
-			ratingResponse:= <- ratingReplyChannel
+			ratingResponse := <-ratingReplyChannel
 			num_completed += 1
-			recordedWait := float64(ratingResponse.WaitTime)
-			recordedRating := float64(ratingResponse.Rating)
+			recordedWait := float64(ratingResponse.Rating.WaitMs)
+			recordedRating := float64(ratingResponse.Rating.Stars)
 			avg_wait += (recordedWait - avg_wait) / float64(num_completed)
 			avg_rating += (recordedRating - avg_rating) / float64(num_completed)
 
@@ -297,12 +318,11 @@ func barber(mailbox chan Message, waitRoomChannel chan Message) {
 			requestNextCustomer()
 			continue
 		case MsgGetStats:
-			msg.From <- Message{
-				Kind: MsgBarberStatsReply,
-				CutCountStat: num_completed,
-				AvgWaitTime: avg_wait,
-				AvgRatingStat: avg_rating,
-			}
+			msg.From <- msgBarberStatsReply(BarberStats{
+				CutsCompleted: num_completed,
+				AvgWaitMs:     avg_wait,
+				AvgRating:     avg_rating,
+			})
 			continue
 		case MsgShutdown:
 			if msg.From != nil {
@@ -320,22 +340,21 @@ func barberSleepLoop(mailbox chan Message, numCompleted int, avgDuration float64
 	for {
 		msg := <-mailbox
 		switch msg.Kind {
-			case MsgWakeUp:
-				logf("barber", "wakes up")
-				return false
-			case MsgGetStats:
-				msg.From <- Message{
-					Kind: MsgBarberStatsReply,
-					CutCountStat: numCompleted,
-					AvgWaitTime: avgDuration,
-					AvgRatingStat: avgRating,
-				}
-			case MsgShutdown:
-				if msg.From != nil {
-					msg.From <- Message{Kind: MsgShutdownAck}
-				}
-				logf("barber", "shutting down")
-				return true
+		case MsgWakeUp:
+			logf("barber", "wakes up")
+			return false
+		case MsgGetStats:
+			msg.From <- msgBarberStatsReply(BarberStats{
+				CutsCompleted: numCompleted,
+				AvgWaitMs:     avgDuration,
+				AvgRating:     avgRating,
+			})
+		case MsgShutdown:
+			if msg.From != nil {
+				msg.From <- Message{Kind: MsgShutdownAck}
+			}
+			logf("barber", "shutting down")
+			return true
 		}
 	}
 }
