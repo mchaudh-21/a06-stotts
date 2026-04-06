@@ -10,8 +10,8 @@ var programStart = time.Now()
 
 // CONSTANTS
 const numCustomers = 20
-const waitCapacity = 5
-const custArrivMin = 500          // ms
+const waitCapacity = 2
+const custArrivMin = 100          // ms
 const custArrivMax = 2000         // ms
 const cutDurMin = 1000            // ms
 const cutDurMax = 4000            // ms
@@ -125,15 +125,19 @@ func shopOwner() {
 	mailbox := make(chan Message)
 	waitRoomChannel := make(chan Message)
 	barberChannel := make(chan Message, 1)
+	customerDone := make(chan struct{}, numCustomers)
 	go waitingRoom(waitRoomChannel)
 	go barber(barberChannel, waitRoomChannel)
 
 	for i := 0; i < numCustomers; i++ {
-		go customer(i, waitRoomChannel)
+		go customer(i, waitRoomChannel, customerDone)
 		logf("shop owner", "spawned customer %d", i)
 		time.Sleep(time.Duration(rand.Intn(custArrivMax-custArrivMin)+custArrivMin) * time.Millisecond)
 	}
-	time.Sleep(gracePeriod)
+	for i := 0; i < numCustomers; i++ {
+		<-customerDone
+	}
+	logf("shop owner", "all customers finished (served or turned away)")
 	barberChannel <- Message{
 		Kind: MsgGetStats,
 		From: mailbox,
@@ -163,6 +167,7 @@ func shopOwner() {
 	if waitRoomShutdownReply.Kind == MsgShutdownAck {
 		logf("shop owner", "waiting room confirmed shutdown")
 	}
+	time.Sleep(time.Duration(200)*time.Millisecond)
 	cust_served := barberStatsReply.BarberStats.CutsCompleted
 	cust_rejected := waitRoomStatsReply.WRStats.TurnawayCount
 	avg_wait := barberStatsReply.BarberStats.AvgWaitMs
@@ -235,7 +240,11 @@ func waitingRoom(mailbox chan Message) {
 
 }
 
-func customer(id int, waitRoomChannel chan Message) {
+func customer(id int, waitRoomChannel chan Message, done chan<- struct{}) {
+	defer func() {
+		done <- struct{}{}
+	}()
+
 	actor := fmt.Sprintf("cust-%d", id)
 	arriveTime := elapsedMs()
 	logf(actor, "arrived at waiting room")
