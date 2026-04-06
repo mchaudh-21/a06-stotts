@@ -10,8 +10,8 @@ var programStart = time.Now()
 
 // CONSTANTS
 const numCustomers = 20
-const waitCapacity = 2
-const custArrivMin = 100          // ms
+const waitCapacity = 5
+const custArrivMin = 500          // ms
 const custArrivMax = 2000         // ms
 const cutDurMin = 1000            // ms
 const cutDurMax = 4000            // ms
