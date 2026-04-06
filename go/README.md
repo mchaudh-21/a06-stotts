@@ -1,3 +1,3 @@
 # Go Implementation
 
-to run (from root): `go run go/main.go`
+To run: `go run main.go`
