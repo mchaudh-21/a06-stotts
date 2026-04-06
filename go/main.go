@@ -3,15 +3,15 @@ package main
 // CONSTANTS
 const numCustomers = 20
 const waitCapacity = 5
-const custArrivalMin = 500 // ms
-const custArrivalMax = 2000 // ms
+const custArrivMin = 500 // ms
+const custArrivMax = 2000 // ms
+const cutDurMin = 1000 // ms
+const cutDurMax = 4000 // ms
 const satisfactionWaitThresh = 3.0 // sec per star lost
 const gracePeriod = 8000 // ms
 
-
-// Common message type
+// Universal message type
 type MsgKind int
-
 const (
     MsgArrive MsgKind = iota
     MsgAdmitted
@@ -23,20 +23,26 @@ const (
     MsgRateRequest
     MsgRating
     MsgGetStats
-    MsgStatsReply
+    MsgWRStatsReply
+	MsgBarberStatsReply
     MsgShutdown
 )
-
 type Message struct {
 	Kind MsgKind
 	From chan Message // reply-to channel
 	CustomerID int
-	Value int	// rating, or other int payload
+	Value int	// payload
 	ArrivalMs int64 // arrival timestamp
+	// Waiting Room stats
+	QueueLengthStat int 
+	TurnawayCountStat int
+	// Barber stats 
+	CutCountStat int
+	AvgCutDurStat float64
+	AvgRatingStat float64
+
 }
 
-
-// 
 func shopOwner() {
 	// run program
 
@@ -52,30 +58,62 @@ func shopOwner() {
 	// print closing report
 }
 
-func waitingRoom(mailbox chan Message) {
-	// track whether barber is sleeping or not. when it sends MsgNoneWaiting, flip to True. when it sends MsgWakeUp, flip to false
+func waitingRoom(mailbox chan Message, barberChannel chan Message) {
+	// todo: clarify when to send wakeup signal; ensure is sent only once per cycle
 	turnaway_count := 0
-	cust_queue := 0
+	cust_queue := make([]int, 0, waitCapacity)
 	barberIsSleeping := false
 	for {
 		msg := <- mailbox
 		switch msg.Kind {
 		case MsgArrive:
-			// todo: if at capacity, send back MsgTurnedAway
-			// else, add to queue and send back MsgAdmitted
-			// if barber is sleeping: wake him up !!!
-		 
+			if len(cust_queue) >= waitCapacity {
+				msg.From <- Message{
+					Kind: MsgTurnedAway,
+				}
+				turnaway_count += 1
+			} else {
+				if barberIsSleeping {
+					barberChannel <- Message{
+						Kind: MsgWakeUp,
+					}
+					barberIsSleeping = false
+				}
+				cust_queue = append(cust_queue, msg.CustomerID)
+				msg.From <- Message{
+					Kind: MsgAdmitted,
+				}
+			}
+
 		case MsgNextCustomer:
-			// todo: if queue is empty, send MsgNoneWaiting to barber & flip flag
-			// if queue is NOT empty: 
-			// (1) if barber is sleeping, send MsgWakeUp
-			// (2) pop first cust and send to barber with MsgCustomerReady
+			if len(cust_queue) == 0 {
+				barberChannel <- Message{
+					Kind: MsgNoneWaiting,
+				}
+			} else {
+				if barberIsSleeping {
+					barberChannel <- Message{
+						Kind: MsgWakeUp,
+					}
+				}
+				next_customer := cust_queue[0]
+				cust_queue = cust_queue[1:]
+
+				barberChannel <- Message{
+					Kind: MsgCustomerReady,
+					CustomerID: next_customer,
+				}
+			}
 		
 		case MsgGetStats:
-			// todo: send stats to shop owner in StatsReply msg. include turnaway count & curr queue length
+			msg.From <- Message{
+				Kind: MsgWRStatsReply,
+				QueueLengthStat: len(cust_queue),
+				TurnawayCountStat: turnaway_count,
+			}
 		
 		case MsgShutdown:
-			// shutdown
+			// todo: shutdown
 		}
 	}
 
